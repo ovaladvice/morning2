@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="referrer" content="no-referrer-when-downgrade">
+<title>王姐的阳光生活</title>
+<style>
+  html,body{margin:0;width:100%;height:100%;background:#0f1420;overflow:hidden}
+  #frame{display:block;width:100%;height:100%;border:0}
+  #tip{position:fixed;inset:0;z-index:9;display:grid;place-items:center;background:#0f1420;color:#9aa4b2;
+       font:15px/1.6 system-ui,-apple-system,"PingFang SC",sans-serif;transition:opacity .25s;text-align:center;padding:0 24px}
+  #tip.hide{opacity:0;pointer-events:none}
+  #tip .spinner{width:34px;height:34px;margin:0 auto 14px;border-radius:50%;
+       border:3px solid #232c40;border-top-color:#4c7bd0;animation:spin 1s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+<iframe id="frame" src="about:blank" referrerpolicy="origin" allowfullscreen></iframe>
+<div id="tip"><div><div class="spinner"></div>正在进入直播间…</div></div>
+<script>
+(function(){
+  /* ================== 配置区（第二个直播间）：换成你自己的房间信息 ==================
+   * 拿分享链接 https://xxx.com/r/房间码?k=分享密钥 ，
+   * 把房间码填 ROOM_CODE、密钥填 SHARE_KEY 即可。
+   * LIVE_BASES 是直播源候选域名，按顺序探测取第一个可用的；
+   * 源站换域名时把新域加到数组最前面。 */
+  var ROOM_CODE = 'NKcQVJ';
+  var SHARE_KEY = 'sdR0C0dgUXK7joK-';
+  var LIVE_BASES = [
+    'https://ssd.hconr.cn',
+    'https://huxiaofeng666.com',
+    'https://ssd.hdnzh.cn'
+  ];
+  /* ================================================================ */
+
+  var frame = document.getElementById('frame');
+  var tip = document.getElementById('tip');
+
+  /* 壳自身地址（去掉文件名与 query/hash），用于让直播间把分享/支付回跳指回壳 */
+  var SELF = location.origin + location.pathname.replace(/[^\/]*$/, '');
+
+  /* 从微信授权/支付回跳回来时，壳地址会带上 wx_token / after_auth，
+   * 读出来转发给内层直播间，同时把地址栏清干净（老内核没有 URLSearchParams 就跳过） */
+  var token = '';
+  var afterAuth = '';
+  try {
+    var params = new URLSearchParams(location.search);
+    token = params.get('wx_token') || '';
+    afterAuth = params.get('after_auth') || '';
+    if (token || afterAuth) {
+      params.delete('wx_token'); params.delete('after_auth');
+      var q = params.toString();
+      history.replaceState(null, '', location.pathname + (q ? '?' + q : '') + location.hash);
+    }
+  } catch (e) { /* 老内核容错：忽略参数清洗 */ }
+
+  function roomUrl(base) {
+    return base + '/api/public/room/' + encodeURIComponent(ROOM_CODE) + '?k=' + encodeURIComponent(SHARE_KEY);
+  }
+
+  var opened = false;
+  function openRoom(base) {
+    if (opened) return;
+    opened = true;
+    var src = base + '/r/' + encodeURIComponent(ROOM_CODE) + '?k=' + encodeURIComponent(SHARE_KEY);
+    if (token) src += '&wx_token=' + encodeURIComponent(token);
+    if (afterAuth) src += '&after_auth=' + encodeURIComponent(afterAuth);
+    src += '&shell=' + encodeURIComponent(SELF);
+    frame.src = src;
+  }
+
+  /* 兜底一：探测流程万一抛错/卡死，4.5 秒后直接用第一个域名打开，绝不卡在提示页 */
+  var failsafe = setTimeout(function(){ openRoom(LIVE_BASES[0]); }, 4500);
+
+  /* 探测：strict=1 须返回合法 JSON 且带房间标识（挡住营销站全路径 200）；
+   * strict=0 宽松模式，服务器有响应就算活（密钥过期时用，让内层页面自己显示状态） */
+  function probe(base, strict) {
+    var ctl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+    var t = setTimeout(function(){ if (ctl) ctl.abort(); }, 4000);
+    var opt = { cache: 'no-store' };
+    if (ctl) opt.signal = ctl.signal;
+    return fetch(roomUrl(base), opt).then(function(r){
+      clearTimeout(t);
+      if (!strict) return base;
+      if (!r.ok) throw new Error('http_' + r.status);
+      return r.json().then(function(j){
+        return (j && (j.room_code || j.name || j.id)) ? base : null;
+      });
+    }).catch(function(){ clearTimeout(t); return null; });
+  }
+
+  function firstOK(list, fn, i) {
+    i = i || 0;
+    if (i >= list.length) return null;
+    return Promise.resolve(fn(list[i])).then(function(r){ return r || firstOK(list, fn, i + 1); });
+  }
+
+  firstOK(LIVE_BASES, function(b){ return probe(b, 1); })
+    .then(function(base){
+      if (base) return base;
+      return firstOK(LIVE_BASES, function(b){ return probe(b, 0); });
+    })
+    .then(function(base){ openRoom(base || LIVE_BASES[0]); })
+    .catch(function(){ openRoom(LIVE_BASES[0]); });
+
+  frame.addEventListener('load', function(){ setTimeout(function(){ tip.classList.add('hide'); }, 250); });
+  /* 兜底二：内层加载事件不触发也 6 秒撤提示，避免一直盖着 */
+  setTimeout(function(){ tip.classList.add('hide'); }, 6000);
+
+  /* 内层直播间通过 postMessage 请求壳做的事：微信授权和支付都必须跳出
+   * iframe 在顶层窗口执行（iframe 里渲染不了授权页、也没有 WeixinJSBridge），
+   * 完成后源站会按 ret 参数跳回壳，壳再把带回来的参数转给内层 */
+  window.addEventListener('message', function(ev){
+    var d = ev.data || {};
+
+    if (d.type === 'wx-auth-please' && d.authUrl) {
+      try {
+        var u = new URL(d.authUrl);
+        var ret = SELF;
+        if (d.action) ret += '?after_auth=' + encodeURIComponent(d.action);
+        u.searchParams.set('ret', ret);
+        location.href = u.toString();
+      } catch (e) { location.href = d.authUrl; }
+      return;
+    }
+
+    if (d.type === 'wx-pay-please' && d.url) {
+      try {
+        var u2 = new URL(d.url, location.origin);
+        u2.searchParams.set('ret', SELF);
+        location.href = u2.toString();
+      } catch (e) { location.href = d.url; }
+      return;
+    }
+  });
+})();
+</script>
+</body>
+</html>
